@@ -14,6 +14,8 @@ dist/
 *.sqlite3
 *.bak
 *.backup
+*.tsbuildinfo
+work/tmp/
 
 *.pem
 *.key
