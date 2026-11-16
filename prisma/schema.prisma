@@ -1,0 +1,419 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  CUSTOMER
+  PRODUCER
+  OWNER
+  ADMIN
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum ComplaintStatus {
+  OPEN
+  INVESTIGATING
+  RESOLVED
+  DISMISSED
+}
+
+enum ProducerStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+enum ProductCondition {
+  NEW
+  USED
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PREPARING
+  READY_FOR_PICKUP
+  SHIPPED
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+  RETURNED
+}
+
+enum PaymentMethod {
+  TELEBIRR
+  CHAPA
+  BANK_TRANSFER
+  COD
+  STRIPE
+}
+
+enum PaymentStatus {
+  UNPAID
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum FinancialStatus {
+  PENDING
+  AVAILABLE
+  SETTLED
+  REVERSED
+}
+
+enum PayoutStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  REVERSED
+}
+
+enum DestinationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+  DISABLED
+}
+
+model User {
+  id                 String         @id @default(cuid())
+  name               String
+  email              String         @unique
+  phone              String?
+  passwordHash       String
+  role               Role           @default(CUSTOMER)
+  accountStatus      AccountStatus  @default(ACTIVE)
+  suspensionReason   String?
+  createdAt          DateTime       @default(now())
+  shop               Shop?
+  addresses          Address[]
+  orders             Order[]
+  reviews            Review[]
+  notifications      Notification[]
+  reportedComplaints Complaint[]    @relation("ComplaintReporter")
+  activityEntries    ActivityLog[]
+  payoutDestinations PayoutDestination[]
+  payoutRequests     PayoutRequest[]
+  financialTransactions FinancialTransaction[]
+  financialWallet    FinancialWallet?
+}
+
+model Shop {
+  id          String         @id @default(cuid())
+  ownerId     String         @unique
+  owner       User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  name        String
+  slug        String         @unique
+  description String
+  city        String
+  district    String?
+  logoUrl     String?
+  status      ProducerStatus @default(PENDING)
+  verified    Boolean        @default(false)
+  codEnabled  Boolean        @default(true)
+  deliveryFee Int            @default(0)
+  createdAt   DateTime       @default(now())
+  products    Product[]
+  orders      Order[]
+  reviews     Review[]
+  financialTransactions FinancialTransaction[]
+}
+
+model Category {
+  id         String              @id @default(cuid())
+  name       String              @unique
+  slug       String              @unique
+  icon       String              @default("✦")
+  products   Product[]
+  commission CategoryCommission?
+}
+
+model Product {
+  id             String           @id @default(cuid())
+  shopId         String
+  shop           Shop             @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  categoryId     String
+  category       Category         @relation(fields: [categoryId], references: [id])
+  name           String
+  slug           String
+  description    String
+  imageUrl       String
+  price          Int
+  compareAtPrice Int?
+  stock          Int              @default(0)
+  condition      ProductCondition @default(NEW)
+  available      Boolean          @default(true)
+  featured       Boolean          @default(false)
+  createdAt      DateTime         @default(now())
+  unitCostSantim Int?
+  orderItems     OrderItem[]
+  reviews        Review[]
+
+  @@unique([shopId, slug])
+  @@index([categoryId, available])
+  @@index([name])
+}
+
+model Address {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  city         String
+  district     String?
+  neighborhood String?
+  street       String?
+  building     String?
+  instructions String?
+  phone        String
+  createdAt    DateTime @default(now())
+  orders       Order[]
+}
+
+model Order {
+  id             String        @id @default(cuid())
+  orderNumber    String        @unique
+  userId         String
+  user           User          @relation(fields: [userId], references: [id])
+  shopId         String
+  shop           Shop          @relation(fields: [shopId], references: [id])
+  addressId      String
+  address        Address       @relation(fields: [addressId], references: [id])
+  subtotal       Int
+  deliveryFee    Int
+  total          Int
+  status         OrderStatus   @default(PENDING)
+  paymentMethod  PaymentMethod
+  paymentStatus  PaymentStatus @default(UNPAID)
+  transactionRef String?
+  chapaPaymentId String?
+  createdAt      DateTime      @default(now())
+  items          OrderItem[]
+  chapaPayment  ChapaPayment? @relation(fields: [chapaPaymentId], references: [id])
+  financialTransactions FinancialTransaction[]
+
+  @@index([paymentStatus, createdAt])
+}
+
+model OrderItem {
+  id        String  @id @default(cuid())
+  orderId   String
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+  name      String
+  unitPrice Int
+  quantity  Int
+  unitCostSantim Int?
+  discountSantim Int @default(0)
+  financialTransaction FinancialTransaction?
+}
+
+model Review {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId        String
+  product          Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  shopId           String
+  shop             Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  rating           Int
+  body             String
+  verifiedPurchase Boolean  @default(false)
+  createdAt        DateTime @default(now())
+
+  @@unique([userId, productId])
+}
+
+model Complaint {
+  id          String          @id @default(cuid())
+  reporterId  String?
+  reporter    User?           @relation("ComplaintReporter", fields: [reporterId], references: [id], onDelete: SetNull)
+  subject     String
+  message     String
+  targetType  String?
+  targetId    String?
+  orderNumber String?
+  status      ComplaintStatus @default(OPEN)
+  resolution  String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([status, createdAt])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String
+  href      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt, createdAt])
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  actor     User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action    String
+  entity    String
+  entityId  String?
+  details   String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([entity, entityId])
+}
+
+model MarketplaceSettings {
+  id                  String   @id @default("marketplace")
+  platformName        String   @default("DHEEHSTORE")
+  globalCommissionBps Int      @default(0)
+  netProfitCommissionBps Int   @default(300)
+  supportEmail        String?
+  updatedAt           DateTime @updatedAt
+}
+
+model CategoryCommission {
+  id            String   @id @default(cuid())
+  categoryId    String   @unique
+  category      Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  commissionBps Int
+  updatedAt     DateTime @updatedAt
+}
+
+model Session {
+  id        String   @id
+  userId    String
+  expiresAt DateTime
+}
+
+model ChapaPayment {
+  id              String   @id @default(cuid())
+  txRef           String   @unique
+  chapaReference  String?  @unique
+  checkoutUrl     String?
+  amountSantim    Int
+  feeSantim       Int      @default(0)
+  status          String   @default("PENDING")
+  verifiedAt      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  orders          Order[]
+  financialTransactions FinancialTransaction[]
+
+  @@index([status, createdAt])
+}
+
+model PayoutDestination {
+  id                    String            @id @default(cuid())
+  userId                String
+  user                  User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider              String
+  destinationType       String
+  accountHolderEncrypted String
+  accountNumberEncrypted String
+  accountLast4          String
+  bankCode              String?
+  chapaSubaccountId     String?
+  status                DestinationStatus @default(PENDING)
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+  payoutRequests        PayoutRequest[]
+
+  @@index([userId, status])
+}
+
+model FinancialTransaction {
+  id                  String         @id @default(cuid())
+  orderId             String?
+  order               Order?         @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  orderItemId         String?        @unique
+  orderItem           OrderItem?     @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
+  paymentId           String?
+  payment             ChapaPayment?  @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  customerId          String?
+  customer            User?          @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  sellerId            String?
+  seller              Shop?          @relation(fields: [sellerId], references: [id], onDelete: SetNull)
+  productId           String?
+  kind                String
+  reference           String         @unique
+  grossSaleSantim     Int            @default(0)
+  productCostSantim   Int            @default(0)
+  eligibleProfitSantim Int           @default(0)
+  commissionSantim    Int            @default(0)
+  sellerAmountSantim  Int            @default(0)
+  processingFeeSantim Int            @default(0)
+  refundSantim        Int            @default(0)
+  settlementStatus    FinancialStatus @default(PENDING)
+  reversesId          String?
+  reverses            FinancialTransaction? @relation("FinancialReversal", fields: [reversesId], references: [id], onDelete: Restrict)
+  reversedBy          FinancialTransaction[] @relation("FinancialReversal")
+  postings            LedgerPosting[]
+  payout              PayoutRequest?
+  createdAt           DateTime       @default(now())
+
+  @@index([sellerId, settlementStatus, createdAt])
+  @@index([kind, createdAt])
+  @@index([orderId])
+}
+
+model LedgerPosting {
+  id              String               @id @default(cuid())
+  transactionId   String
+  transaction     FinancialTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  account         String
+  debitSantim     Int                  @default(0)
+  creditSantim    Int                  @default(0)
+  createdAt       DateTime             @default(now())
+
+  @@index([account, createdAt])
+  @@index([transactionId])
+}
+
+model PayoutRequest {
+  id              String               @id @default(cuid())
+  userId          String
+  user            User                 @relation(fields: [userId], references: [id], onDelete: Restrict)
+  destinationId   String
+  destination     PayoutDestination    @relation(fields: [destinationId], references: [id], onDelete: Restrict)
+  amountSantim    Int
+  reference       String               @unique
+  idempotencyKey  String               @unique
+  providerReference String?
+  status          PayoutStatus         @default(PENDING)
+  failureReason   String?
+  transactionId   String?              @unique
+  transaction     FinancialTransaction? @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  completedAt     DateTime?
+
+  @@index([userId, status, createdAt])
+}
+
+model FinancialWallet {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  user            User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  pendingSantim   Int      @default(0)
+  availableSantim Int      @default(0)
+  updatedAt       DateTime @updatedAt
+}

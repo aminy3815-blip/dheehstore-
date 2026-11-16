@@ -1,0 +1,8 @@
+'use client';
+import { useState } from 'react';
+
+export default function SupportPage() {
+  const [error, setError] = useState(''); const [success, setSuccess] = useState(''); const [busy, setBusy] = useState(false);
+  async function submit(e: any) { e.preventDefault(); setBusy(true); setError(''); setSuccess(''); const form = new FormData(e.currentTarget); const response = await fetch('/api/complaints', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(Object.fromEntries(form)) }); const data = await response.json(); if (!response.ok) setError(data.error); else { setSuccess('Your complaint was sent to the DHEEHSTORE owner.'); e.currentTarget.reset(); } setBusy(false); }
+  return <main className="wrap pageContent"><div className="eyebrow">CUSTOMER SUPPORT</div><h1>How can we help?</h1><p className="lead">Send a complaint or dispute to the marketplace owner for review.</p><form className="supportForm stackForm" onSubmit={submit}><label>What is this about?<select name="targetType"><option value="OTHER">Something else</option><option value="ORDER">An order</option><option value="SELLER">A seller</option><option value="PRODUCT">A product</option></select></label><label>Order number (optional)<input name="orderNumber" placeholder="DH-…"/></label><label>Subject<input name="subject" required minLength={4} maxLength={160}/></label><label>Details<textarea name="message" required minLength={10} maxLength={4000} rows={6}/></label>{error&&<div className="errorBox">{error}</div>}{success&&<div className="successBox">{success}</div>}<button className="primaryBtn" disabled={busy}>{busy?'Sending…':'Send to support →'}</button></form></main>;
+}
