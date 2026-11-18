@@ -3,6 +3,9 @@ import { db } from '@/lib/db';
 import { money } from '@/lib/format';
 import { redirect } from 'next/navigation';
 import { ProductForm, OrderStatusButton, ProductManage } from '@/components/SellerControls';
+import { WeeklyCommissionPanel } from '@/components/WeeklyCommissionPanel';
+import { decryptBankingValue } from '@/lib/banking-crypto';
+import { ensureCommissionStatements, getAddisWeekPeriod, getAddisWeekStart } from '@/lib/weekly-commission';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,6 +19,70 @@ export default async function Seller() {
     db.product.findMany({ where: { shopId: shop.id }, include: { category: true }, orderBy: { createdAt: 'desc' } }),
     db.order.findMany({ where: { shopId: shop.id }, include: { items: true, user: true, address: true }, orderBy: { createdAt: 'desc' } }),
   ]);
+  const now = new Date();
+  const currentWeekStart = getAddisWeekStart(now);
+  const commissionData = await db.$transaction(async (tx) => {
+    const statements = await ensureCommissionStatements(tx, shop.id, now);
+    const [currentSales, submissions, destinations] = await Promise.all([
+      tx.commissionSale.aggregate({
+        where: { shopId: shop.id, periodStart: currentWeekStart },
+        _sum: { saleSantim: true, commissionSantim: true },
+      }),
+      tx.commissionPaymentSubmission.findMany({
+        where: { shopId: shop.id },
+        select: {
+          id: true, method: true, destinationLast4: true, amountSantim: true, confirmedSantim: true,
+          reference: true, status: true, rejectionReason: true, createdAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 100,
+      }),
+      tx.ownerCommissionDestination.findMany({
+        select: { id: true, provider: true, accountHolderEncrypted: true, accountNumberEncrypted: true, accountLast4: true, isDefault: true },
+        orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
+      }),
+    ]);
+    const statementDetails = await Promise.all(statements.map(async (statement) => {
+      const [paid, credited] = await Promise.all([
+        tx.commissionPaymentAllocation.aggregate({ where: { statementId: statement.id }, _sum: { amountSantim: true } }),
+        tx.commissionCreditAllocation.aggregate({ where: { statementId: statement.id }, _sum: { amountSantim: true } }),
+      ]);
+      const paidSantim = paid._sum.amountSantim || 0;
+      const creditSantim = credited._sum.amountSantim || 0;
+      return {
+        id: statement.id,
+        periodStart: statement.periodStart.toISOString(),
+        periodEnd: statement.periodEnd.toISOString(),
+        deadline: statement.deadline.toISOString(),
+        salesSantim: statement.salesSantim,
+        commissionSantim: statement.commissionSantim,
+        carriedSantim: statement.carriedSantim,
+        totalDueSantim: statement.totalDueSantim,
+        paidSantim,
+        creditSantim,
+        outstandingSantim: Math.max(0, statement.commissionSantim - paidSantim - creditSantim),
+        status: statement.status,
+      };
+    }));
+    return {
+      statements: statementDetails,
+      currentSalesSantim: currentSales._sum.saleSantim || 0,
+      currentCommissionSantim: currentSales._sum.commissionSantim || 0,
+      previousOutstandingSantim: statementDetails
+        .filter((statement) => new Date(statement.periodStart) < currentWeekStart)
+        .reduce((sum, statement) => sum + statement.outstandingSantim, 0),
+      totalOutstandingSantim: statementDetails.reduce((sum, statement) => sum + statement.outstandingSantim, 0),
+      submissions: submissions.map((submission) => ({ ...submission, createdAt: submission.createdAt.toISOString() })),
+      destinations: destinations.map((destination) => ({
+        id: destination.id,
+        provider: destination.provider,
+        accountHolder: decryptBankingValue(destination.accountHolderEncrypted),
+        accountNumber: decryptBankingValue(destination.accountNumberEncrypted),
+        isDefault: destination.isDefault,
+      })),
+    };
+  });
+  const paymentDeadline = getAddisWeekPeriod(currentWeekStart).deadline.toISOString();
   const pending = orders.filter((order) => ['PENDING', 'CONFIRMED', 'PREPARING'].includes(order.status)).length;
   const revenue = orders.filter((order) => order.paymentStatus === 'PAID').reduce((sum, order) => sum + order.total, 0);
 
@@ -29,6 +96,7 @@ export default async function Seller() {
       <div><small>LISTINGS</small><b>{products.length}</b></div><div><small>ORDERS</small><b>{orders.length}</b></div>
       <div><small>NEEDS ATTENTION</small><b>{pending}</b></div><div><small>PAID SALES</small><b>{money(revenue)}</b></div>
     </div>
+    <WeeklyCommissionPanel {...commissionData} paymentDeadline={paymentDeadline}/>
     <div className="dashboardGrid">
       <section className="dashPanel">
         <div className="sectionIntro"><div><div className="eyebrow">YOUR CATALOGUE</div><h2>Product listings</h2></div></div>

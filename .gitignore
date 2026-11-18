@@ -25,3 +25,7 @@ work/tmp/
 *.jks
 id_rsa
 id_ed25519
+.neon
+
+.vercel
+.env*

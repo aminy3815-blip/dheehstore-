@@ -1,6 +1,7 @@
 import { FinancialStatus, Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { assertBalancedPostings, calculateSaleAmounts, Posting } from './finance';
+import { recordEligibleOrderCommission } from './weekly-commission';
 
 type TransactionClient = Prisma.TransactionClient;
 
@@ -29,8 +30,6 @@ export async function recordPaidOrder(tx: TransactionClient, orderId: string, pa
   if (order.items.some((item) => item.unitCostSantim === null)) throw new Error('A product cost snapshot is required before this paid order can be settled.');
   if (await tx.financialTransaction.findFirst({ where: { orderId, kind: 'SALE' } })) return;
 
-  const settings = await tx.marketplaceSettings.findUnique({ where: { id: 'marketplace' } });
-  const commissionBps = settings?.netProfitCommissionBps ?? 300;
   const lines = order.items.map((item) => {
     return {
       item,
@@ -39,7 +38,7 @@ export async function recordPaidOrder(tx: TransactionClient, orderId: string, pa
         quantity: item.quantity,
         unitCostSantim: item.unitCostSantim!,
         discountSantim: item.discountSantim,
-        commissionBps,
+        commissionBps: 0,
       }),
     };
   });
@@ -118,6 +117,7 @@ export async function recordPaidOrder(tx: TransactionClient, orderId: string, pa
       });
     }
   }
+  await recordEligibleOrderCommission(tx, order.id);
   if (!isCod && order.status === 'DELIVERED') await releaseOrderSettlement(tx, order.id);
 }
 

@@ -2,18 +2,19 @@ import { getOwner } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { redirect } from 'next/navigation';
 import { OwnerDashboard } from '@/components/OwnerDashboard';
-import { getFinanceRange, matchesFinanceRange } from '@/lib/finance-report';
+import { addAddisDays, getAddisDateKey, getAddisDateStart, getAddisDateParts, getAddisMonthStart, getAddisYearStart, getFinanceRange, matchesFinanceRange } from '@/lib/finance-report';
 import { decryptBankingValue } from '@/lib/banking-crypto';
+import { ensureCommissionStatements, getAddisWeekStart } from '@/lib/weekly-commission';
 
 export const dynamic = 'force-dynamic';
 
 function sum(values: number[]) { return values.reduce((total, value) => total + value, 0); }
-function dateKey(value: Date) { return value.toISOString().slice(0, 10); }
+function dateKey(value: Date) { return getAddisDateKey(value); }
 
-export default async function OwnerPage({ searchParams }: { searchParams: Promise<{ view?: string; range?: string; from?: string; to?: string }> }) {
+export default async function OwnerPage({ searchParams }: { searchParams: Promise<{ view?: string; range?: string; from?: string; to?: string; status?: string }> }) {
   const owner = await getOwner();
   if (!owner) redirect('/login?next=/owner');
-  const { view = 'overview', range, from, to } = await searchParams;
+  const { view = 'overview', range, from, to, status } = await searchParams;
   const [settings, users, shops, products, orders, paidAggregate, pendingSellers, pendingPayments, openComplaints, unreadCount, recentOrders] = await Promise.all([
     db.marketplaceSettings.upsert({ where: { id: 'marketplace' }, update: {}, create: { id: 'marketplace', platformName: 'DHEEHSTORE', globalCommissionBps: 0 } }),
     db.user.count(),
@@ -37,8 +38,90 @@ export default async function OwnerPage({ searchParams }: { searchParams: Promis
     case 'products': data.products = await db.product.findMany({ take: 300, orderBy: { createdAt: 'desc' }, include: { shop: true, category: true } }); break;
     case 'orders': data.orders = await db.order.findMany({ take: 200, orderBy: { createdAt: 'desc' }, include: { user: true, shop: true, address: true, items: true } }); break;
     case 'payments': data.payments = await db.order.findMany({ take: 300, orderBy: { createdAt: 'desc' }, include: { user: true } }); break;
+    case 'commission-collection': {
+      const commissionShops = await db.shop.findMany({ select: { id: true } });
+      for (const shop of commissionShops) {
+        await db.$transaction((tx) => ensureCommissionStatements(tx, shop.id));
+      }
+      const [statements, submissions, sales, destinations] = await Promise.all([
+        db.weeklyCommissionStatement.findMany({
+          where: status === 'OVERDUE' ? { status: 'OVERDUE' } : {},
+          take: 500,
+          orderBy: [{ periodStart: 'desc' }, { shop: { name: 'asc' } }],
+          include: {
+            shop: { select: { id: true, name: true, owner: { select: { name: true, email: true } } } },
+            paymentAllocations: { select: { amountSantim: true } },
+            creditAllocations: { select: { amountSantim: true } },
+          },
+        }),
+        db.commissionPaymentSubmission.findMany({
+          take: 300,
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true, amountSantim: true, confirmedSantim: true, reference: true, method: true,
+            destinationProvider: true, destinationLast4: true, status: true, rejectionReason: true, createdAt: true,
+            shop: { select: { id: true, name: true } }, submitter: { select: { name: true } },
+          },
+        }),
+        db.commissionSale.findMany({
+          take: 300,
+          orderBy: { eligibleAt: 'desc' },
+          include: { order: { select: { orderNumber: true } }, product: { select: { name: true } }, shop: { select: { name: true } } },
+        }),
+        db.ownerCommissionDestination.findMany({ orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }] }),
+      ]);
+      const statementRows = statements.map((statement) => {
+        const paidSantim = sum(statement.paymentAllocations.map((allocation) => allocation.amountSantim));
+        const creditSantim = sum(statement.creditAllocations.map((allocation) => allocation.amountSantim));
+        const shopSubmissions = submissions.filter((submission) => submission.shop.id === statement.shopId);
+        return {
+          ...statement,
+          paidSantim,
+          creditSantim,
+          submittedSantim: sum(shopSubmissions
+            .filter((submission) => submission.status === 'PENDING' || submission.status === 'AWAITING_VERIFICATION')
+            .map((submission) => submission.amountSantim)),
+          outstandingSantim: Math.max(0, statement.commissionSantim - paidSantim - creditSantim),
+        };
+      });
+      const salesWithCredits = await Promise.all(sales.map(async (sale) => {
+        const credits = await db.commissionCredit.aggregate({ where: { saleId: sale.id }, _sum: { refundSantim: true } });
+        return {
+          id: sale.id,
+          orderId: sale.orderId,
+          orderNumber: sale.order.orderNumber,
+          orderItemId: sale.orderItemId,
+          productName: sale.product.name,
+          shopName: sale.shop.name,
+          saleSantim: sale.saleSantim,
+          creditedRefundSantim: credits._sum.refundSantim || 0,
+        };
+      }));
+      data.commissionCollection = {
+        statements: statementRows,
+        submissions: submissions.map((submission) => ({
+          ...submission,
+          createdAt: submission.createdAt.toISOString(),
+          shopName: submission.shop.name,
+          sellerName: submission.submitter.name,
+        })),
+        sales: salesWithCredits,
+        destinations: destinations.map((destination) => ({
+          id: destination.id,
+          provider: destination.provider,
+          accountHolder: decryptBankingValue(destination.accountHolderEncrypted),
+          accountNumber: decryptBankingValue(destination.accountNumberEncrypted),
+          isDefault: destination.isDefault,
+        })),
+      };
+      break;
+    }
     case 'finances': {
       const selectedRange = getFinanceRange(range, from, to);
+      const commissionShops = await db.shop.findMany({ select: { id: true } });
+      for (const shop of commissionShops) {
+        await db.$transaction((tx) => ensureCommissionStatements(tx, shop.id));
+      }
       const [sales, payouts, ownerWallet, sellerPayouts, pendingDestinations] = await Promise.all([
         db.financialTransaction.findMany({ where: { kind: { in: ['SALE', 'DELIVERY'] } }, include: { order: { select: { paymentMethod: true } }, seller: { select: { name: true } } }, orderBy: { createdAt: 'asc' } }),
         db.payoutRequest.findMany({ where: { userId: owner.id, status: 'SUCCEEDED' }, select: { amountSantim: true } }),
@@ -46,44 +129,81 @@ export default async function OwnerPage({ searchParams }: { searchParams: Promis
         db.payoutRequest.findMany({ where: { status: 'SUCCEEDED', user: { role: 'PRODUCER' } }, select: { amountSantim: true } }),
         db.payoutDestination.findMany({ where: { status: 'PENDING' }, include: { user: { select: { name: true, email: true } } }, orderBy: { createdAt: 'asc' } }),
       ]);
+      const [weeklySales, weeklyStatements, weeklyRefunds] = await Promise.all([
+        db.commissionSale.findMany({
+          include: { shop: { select: { name: true } }, product: { select: { name: true } }, order: { select: { paymentMethod: true } } },
+          orderBy: { eligibleAt: 'asc' },
+        }),
+        db.weeklyCommissionStatement.findMany({
+          include: { paymentAllocations: { select: { amountSantim: true } }, creditAllocations: { select: { amountSantim: true } } },
+        }),
+        db.commissionCredit.aggregate({ _sum: { refundSantim: true } }),
+      ]);
       const saleLines = sales.filter((transaction) => transaction.kind === 'SALE');
+      const commissionEntries = [
+        ...saleLines.map((transaction) => ({
+          createdAt: transaction.createdAt,
+          commissionSantim: transaction.commissionSantim,
+          saleSantim: transaction.grossSaleSantim,
+          shopName: transaction.seller?.name || 'Unknown shop',
+          productName: '',
+          paymentMethod: transaction.order?.paymentMethod || 'Unspecified',
+          productId: transaction.productId,
+        })),
+        ...weeklySales.map((sale) => ({
+          createdAt: sale.eligibleAt,
+          commissionSantim: sale.commissionSantim,
+          saleSantim: sale.saleSantim,
+          shopName: sale.shop.name,
+          productName: sale.product.name,
+          paymentMethod: sale.order.paymentMethod,
+          productId: sale.productId,
+        })),
+      ];
       const pendingCodIds = saleLines.filter((transaction) => transaction.settlementStatus === 'PENDING' && transaction.order?.paymentMethod === 'COD').map((transaction) => transaction.id);
       const codCollections = pendingCodIds.length ? await db.financialTransaction.aggregate({
         where: { kind: 'COD_COMMISSION_COLLECTION', reversesId: { in: pendingCodIds } },
         _sum: { commissionSantim: true },
       }) : null;
       const now = new Date();
-      const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const dayStart = getAddisDateStart(now);
       const weekStart = new Date(now.getTime() - 7 * 86400000);
       const thirtyDays = new Date(now.getTime() - 30 * 86400000);
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      const yearStart = new Date(now.getFullYear(), 0, 1);
-      const totalCommission = sum(saleLines.map((transaction) => transaction.commissionSantim));
+      const monthStart = getAddisMonthStart(now);
+      const yearStart = getAddisYearStart(now);
+      const totalCommission = sum(commissionEntries.map((transaction) => transaction.commissionSantim));
       const inPeriod = sales.filter((transaction) => matchesFinanceRange(transaction.createdAt, selectedRange));
-      const reportSales = inPeriod.filter((transaction) => transaction.kind === 'SALE');
-      const dailyStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29);
+      const reportSales = commissionEntries.filter((transaction) => matchesFinanceRange(transaction.createdAt, selectedRange));
+      const dailyStart = addAddisDays(dayStart, -29);
       const daily = Array.from({ length: 30 }, (_, index) => {
-        const day = new Date(dailyStart.getFullYear(), dailyStart.getMonth(), dailyStart.getDate() + index);
-        const value = sum(saleLines.filter((transaction) => dateKey(transaction.createdAt) === dateKey(day)).map((transaction) => transaction.commissionSantim));
+        const day = addAddisDays(dailyStart, index);
+        const value = sum(commissionEntries.filter((transaction) => dateKey(transaction.createdAt) === dateKey(day)).map((transaction) => transaction.commissionSantim));
         return { label: dateKey(day).slice(5), value };
       });
-      const currentWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7));
-      const weeklyStart = new Date(currentWeek.getFullYear(), currentWeek.getMonth(), currentWeek.getDate() - 11 * 7);
+      const currentWeek = getAddisWeekStart(now);
+      const weeklyStart = new Date(currentWeek.getTime() - 11 * 7 * 86400000);
       const weekly = Array.from({ length: 12 }, (_, index) => {
-        const week = new Date(weeklyStart.getFullYear(), weeklyStart.getMonth(), weeklyStart.getDate() + index * 7);
-        const end = new Date(week.getFullYear(), week.getMonth(), week.getDate() + 7);
-        const value = sum(saleLines.filter((transaction) => transaction.createdAt >= week && transaction.createdAt < end).map((transaction) => transaction.commissionSantim));
+        const week = new Date(weeklyStart.getTime() + index * 7 * 86400000);
+        const end = new Date(week.getTime() + 7 * 86400000);
+        const value = sum(commissionEntries.filter((transaction) => transaction.createdAt >= week && transaction.createdAt < end).map((transaction) => transaction.commissionSantim));
         return { label: dateKey(week).slice(5), value };
       });
-      const months = Array.from({ length: 12 }, (_, index) => new Date(now.getFullYear(), now.getMonth() - 11 + index, 1));
-      const monthly = months.map((month) => ({
-        label: month.toLocaleString('en', { month: 'short' }),
-        value: sum(saleLines.filter((transaction) => transaction.createdAt.getFullYear() === month.getFullYear() && transaction.createdAt.getMonth() === month.getMonth()).map((transaction) => transaction.commissionSantim)),
-      }));
-      const years = Array.from({ length: 5 }, (_, index) => now.getFullYear() - 4 + index);
+      const months = Array.from({ length: 12 }, (_, index) => getAddisMonthStart(now, index - 11));
+      const monthly = months.map((month, index) => {
+        const end = getAddisMonthStart(now, index - 10);
+        return {
+          label: month.toLocaleString('en', { month: 'short', timeZone: 'Africa/Addis_Ababa' }),
+          value: sum(commissionEntries.filter((transaction) => transaction.createdAt >= month && transaction.createdAt < end).map((transaction) => transaction.commissionSantim)),
+        };
+      });
+      const currentYear = getAddisDateParts(now).year;
+      const years = Array.from({ length: 5 }, (_, index) => currentYear - 4 + index);
       const annual = years.map((year) => ({
         label: String(year),
-        value: sum(saleLines.filter((transaction) => transaction.createdAt.getFullYear() === year).map((transaction) => transaction.commissionSantim)),
+        value: sum(commissionEntries.filter((transaction) =>
+          transaction.createdAt >= getAddisYearStart(now, year - currentYear) &&
+          transaction.createdAt < getAddisYearStart(now, year - currentYear + 1),
+        ).map((transaction) => transaction.commissionSantim)),
       }));
       const groupBy = (keyOf: (transaction: typeof reportSales[number]) => string) => {
         const grouped = new Map<string, number>();
@@ -93,27 +213,44 @@ export default async function OwnerPage({ searchParams }: { searchParams: Promis
         }
         return [...grouped].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value).slice(0, 20);
       };
-      const productIds = [...new Set(reportSales.map((transaction) => transaction.productId).filter((id): id is string => Boolean(id)))];
-      const productNames = await db.product.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true } });
-      const nameByProduct = new Map(productNames.map((product) => [product.id, product.name]));
-      const eligibleProfit = sum(saleLines.map((transaction) => transaction.eligibleProfitSantim));
-      const refunded = sum(sales.map((transaction) => transaction.refundSantim));
+      const refunded = sum(sales.map((transaction) => transaction.refundSantim)) + (weeklyRefunds._sum.refundSantim || 0);
+      const collectedCommission = sum(weeklyStatements.flatMap((statement) => statement.paymentAllocations.map((allocation) => allocation.amountSantim)));
+      const refundCredits = sum(weeklyStatements.flatMap((statement) => statement.creditAllocations.map((allocation) => allocation.amountSantim)));
+      const weeklyOutstanding = sum(weeklyStatements.map((statement) => Math.max(
+        0,
+        statement.commissionSantim -
+          sum(statement.paymentAllocations.map((allocation) => allocation.amountSantim)) -
+          sum(statement.creditAllocations.map((allocation) => allocation.amountSantim)),
+      )));
+      const overdueCommission = sum(weeklyStatements
+        .filter((statement) => statement.deadline < now)
+        .map((statement) => Math.max(
+          0,
+          statement.commissionSantim -
+            sum(statement.paymentAllocations.map((allocation) => allocation.amountSantim)) -
+            sum(statement.creditAllocations.map((allocation) => allocation.amountSantim)),
+        )));
       data.finance = {
         range: selectedRange.key,
-        from: selectedRange.from?.toISOString().slice(0, 10) || '',
-        to: selectedRange.to ? new Date(selectedRange.to.getTime() - 86400000).toISOString().slice(0, 10) : '',
+        from: selectedRange.from ? getAddisDateKey(selectedRange.from) : '',
+        to: selectedRange.to ? getAddisDateKey(new Date(selectedRange.to.getTime() - 1)) : '',
         totalSalesSantim: sum(sales.map((transaction) => transaction.grossSaleSantim)),
-        eligibleProfitSantim: eligibleProfit,
+        commissionableSalesSantim: sum(commissionEntries.map((transaction) => transaction.saleSantim)),
         totalCommissionSantim: totalCommission,
-        todayCommissionSantim: sum(saleLines.filter((transaction) => transaction.createdAt >= dayStart).map((transaction) => transaction.commissionSantim)),
-        sevenDayCommissionSantim: sum(saleLines.filter((transaction) => transaction.createdAt >= weekStart).map((transaction) => transaction.commissionSantim)),
-        thirtyDayCommissionSantim: sum(saleLines.filter((transaction) => transaction.createdAt >= thirtyDays).map((transaction) => transaction.commissionSantim)),
-        monthlyCommissionSantim: sum(saleLines.filter((transaction) => transaction.createdAt >= monthStart).map((transaction) => transaction.commissionSantim)),
-        annualCommissionSantim: sum(saleLines.filter((transaction) => transaction.createdAt >= yearStart).map((transaction) => transaction.commissionSantim)),
+        todayCommissionSantim: sum(commissionEntries.filter((transaction) => transaction.createdAt >= dayStart).map((transaction) => transaction.commissionSantim)),
+        sevenDayCommissionSantim: sum(commissionEntries.filter((transaction) => transaction.createdAt >= weekStart).map((transaction) => transaction.commissionSantim)),
+        thirtyDayCommissionSantim: sum(commissionEntries.filter((transaction) => transaction.createdAt >= thirtyDays).map((transaction) => transaction.commissionSantim)),
+        monthlyCommissionSantim: sum(commissionEntries.filter((transaction) => transaction.createdAt >= monthStart).map((transaction) => transaction.commissionSantim)),
+        annualCommissionSantim: sum(commissionEntries.filter((transaction) => transaction.createdAt >= yearStart).map((transaction) => transaction.commissionSantim)),
         lifetimeCommissionSantim: totalCommission,
         pendingCommissionSantim: Math.max(0,
+          weeklyOutstanding +
           sum(saleLines.filter((transaction) => transaction.settlementStatus === 'PENDING').map((transaction) => transaction.commissionSantim)) -
           (codCollections?._sum.commissionSantim || 0)),
+        commissionCollectedSantim: collectedCommission,
+        commissionOutstandingSantim: weeklyOutstanding,
+        overdueCommissionSantim: overdueCommission,
+        commissionRefundCreditsSantim: refundCredits,
         availableWithdrawalSantim: ownerWallet?.availableSantim ?? 0,
         pendingWithdrawalSantim: ownerWallet?.pendingSantim ?? 0,
         withdrawnSantim: sum(payouts.map((payout) => payout.amountSantim)),
@@ -121,15 +258,15 @@ export default async function OwnerPage({ searchParams }: { searchParams: Promis
         refundsSantim: refunded,
         chargebacksSantim: 0,
         reportSalesSantim: sum(inPeriod.map((transaction) => transaction.grossSaleSantim)),
-        reportProfitSantim: sum(reportSales.map((transaction) => transaction.eligibleProfitSantim)),
+        reportCommissionableSalesSantim: sum(reportSales.map((transaction) => transaction.saleSantim)),
         reportCommissionSantim: sum(reportSales.map((transaction) => transaction.commissionSantim)),
         daily,
         weekly,
         monthly,
         annual,
-        byShop: groupBy((transaction) => transaction.seller?.name || 'Unknown shop'),
-        byProduct: groupBy((transaction) => nameByProduct.get(transaction.productId || '') || 'Unknown product'),
-        byMethod: groupBy((transaction) => transaction.order?.paymentMethod || 'Unspecified'),
+        byShop: groupBy((transaction) => transaction.shopName),
+        byProduct: groupBy((transaction) => transaction.productName || 'Historical ledger item'),
+        byMethod: groupBy((transaction) => transaction.paymentMethod),
         destinations: pendingDestinations.map((destination) => ({
           id: destination.id,
           userName: destination.user.name,
@@ -140,7 +277,6 @@ export default async function OwnerPage({ searchParams }: { searchParams: Promis
           accountLast4: destination.accountLast4,
           status: destination.status,
         })),
-        commissionBps: settings.netProfitCommissionBps,
       };
       break;
     }

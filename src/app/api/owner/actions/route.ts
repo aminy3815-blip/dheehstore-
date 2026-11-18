@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import { Prisma } from '@prisma/client';
 import { db } from '@/lib/db';
 import { getOwner } from '@/lib/auth';
 import { recordPaidOrder } from '@/lib/finance-ledger';
+import { getCommissionOutstanding, recordCommissionCollection, recordCommissionRefund } from '@/lib/weekly-commission';
 
 const schema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('seller-status'), id: z.string(), status: z.enum(['APPROVED', 'REJECTED', 'SUSPENDED']) }),
@@ -15,6 +17,15 @@ const schema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('commission-category'), categoryId: z.string(), basisPoints: z.number().int().min(0).max(5000) }),
   z.object({ action: z.literal('marketplace-settings'), platformName: z.string().min(3).max(80), supportEmail: z.email().or(z.literal('')) }),
   z.object({ action: z.literal('notification-read'), id: z.string() }),
+  z.object({ action: z.literal('commission-payment-confirm'), id: z.string(), confirmedSantim: z.number().int().positive() }),
+  z.object({ action: z.literal('commission-payment-reject'), id: z.string(), reason: z.string().trim().min(4).max(500) }),
+  z.object({
+    action: z.literal('commission-refund'),
+    orderId: z.string(),
+    orderItemId: z.string(),
+    refundSantim: z.number().int().positive().max(2147483647),
+    reference: z.string().trim().min(4).max(100),
+  }),
 ]);
 
 export async function POST(req: Request) {
@@ -90,12 +101,78 @@ export async function POST(req: Request) {
           entity = 'notification'; entityId = data.id; details = 'Owner notification marked as read.';
           break;
         }
+        case 'commission-payment-confirm': {
+          const submission = await recordCommissionCollection(tx, {
+            submissionId: data.id,
+            reviewerId: owner.id,
+            confirmedSantim: data.confirmedSantim,
+          });
+          await getCommissionOutstanding(tx, submission.shopId);
+          await tx.notification.create({
+            data: {
+              userId: submission.submitterId,
+              title: 'Commission payment received',
+              body: `${data.confirmedSantim} santim was confirmed by DHEEHSTORE.`,
+              href: '/seller',
+            },
+          });
+          entity = 'commission-payment'; entityId = submission.id;
+          details = `Confirmed ${data.confirmedSantim} santim for seller payment reference ${submission.reference}.`;
+          break;
+        }
+        case 'commission-payment-reject': {
+          const submission = await tx.commissionPaymentSubmission.findUniqueOrThrow({ where: { id: data.id } });
+          if (!['PENDING', 'AWAITING_VERIFICATION'].includes(submission.status)) throw new Error('This commission payment submission has already been reviewed.');
+          await tx.commissionPaymentSubmission.update({
+            where: { id: submission.id },
+            data: { status: 'REJECTED', rejectionReason: data.reason, reviewerId: owner.id, reviewedAt: new Date() },
+          });
+          await getCommissionOutstanding(tx, submission.shopId);
+          await tx.notification.create({
+            data: {
+              userId: submission.submitterId,
+              title: 'Commission payment was rejected',
+              body: data.reason,
+              href: '/seller',
+            },
+          });
+          entity = 'commission-payment'; entityId = submission.id;
+          details = `Rejected seller payment reference ${submission.reference}: ${data.reason}`;
+          break;
+        }
+        case 'commission-refund': {
+          const previousCredit = await tx.commissionCredit.findUnique({ where: { reference: data.reference } });
+          const credit = await recordCommissionRefund(tx, {
+            orderId: data.orderId,
+            orderItemId: data.orderItemId,
+            refundSantim: data.refundSantim,
+            reference: data.reference,
+            actorId: owner.id,
+          });
+          if (!previousCredit && credit.commissionCreditSantim > 0) {
+            const shop = await tx.shop.findUniqueOrThrow({ where: { id: credit.shopId }, select: { ownerId: true } });
+            await tx.notification.create({
+              data: {
+                userId: shop.ownerId,
+                title: 'Commission adjusted for a verified refund',
+                body: `${credit.commissionCreditSantim} santim in commission credit was applied or carried forward.`,
+                href: '/seller',
+              },
+            });
+          }
+          entity = 'commission-refund'; entityId = credit.id;
+          details = `Recorded verified refund ${credit.reference}; ${credit.commissionCreditSantim} santim commission credit.`;
+          break;
+        }
       }
       await tx.activityLog.create({ data: { actorId: owner.id, action: data.action, entity, entityId, details } });
       return { ok: true };
-    });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     return NextResponse.json(result);
   } catch (error: any) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') {
+      return NextResponse.json({ error: 'A concurrent financial update occurred. Reload and retry the action.' }, { status: 409 });
+    }
     return NextResponse.json({ error: error?.issues?.[0]?.message || error?.message || 'Owner action failed.' }, { status: 400 });
   }
 }

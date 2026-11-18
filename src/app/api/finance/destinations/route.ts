@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getOwner, getUser } from '@/lib/auth';
 import { decryptBankingValue, encryptBankingValue } from '@/lib/banking-crypto';
-import { chapaRequest } from '@/lib/chapa';
+import { chapaRequest, hasChapaCredentials } from '@/lib/chapa';
 import { db } from '@/lib/db';
 
 function bankRows(data: unknown): { code: string; name: string; destinationType: 'BANK' | 'WALLET' }[] {
@@ -46,7 +46,7 @@ export async function GET() {
   }) : null;
   let banks: { code: string; name: string; destinationType: 'BANK' | 'WALLET' }[] = [];
   let bankError: string | null = null;
-  if (process.env.CHAPA_SECRET_KEY) {
+  if (hasChapaCredentials()) {
     try {
       const response = await chapaRequest('banks', { method: 'GET' });
       banks = bankRows(response.data);
@@ -54,7 +54,7 @@ export async function GET() {
       bankError = error instanceof Error ? error.message : 'Unable to load Chapa-supported destinations.';
     }
   } else {
-    bankError = 'Chapa sandbox credentials are not configured; destination setup and payouts are unavailable.';
+    bankError = 'Chapa credentials are not configured for the selected environment; destination setup and payouts are unavailable.';
   }
   return NextResponse.json({
     banks,
@@ -99,6 +99,7 @@ export async function POST(req: Request) {
   const user = await bankingUser();
   if (!user) return NextResponse.json({ error: 'Seller or owner access required.' }, { status: 403 });
   try {
+    if (!hasChapaCredentials()) return NextResponse.json({ error: 'Chapa credentials are not configured for the selected environment.' }, { status: 503 });
     const data = destinationSchema.parse(await req.json());
     const response = await chapaRequest('banks', { method: 'GET' });
     const banks = bankRows(response.data);

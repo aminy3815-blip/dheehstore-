@@ -7,7 +7,11 @@ export async function POST(req: Request) {
   const rawBody = await req.text();
   let validSignature = false;
   try {
-    validSignature = verifyChapaWebhookSignature(rawBody, req.headers.get('x-chapa-signature'));
+    validSignature = verifyChapaWebhookSignature(
+      rawBody,
+      req.headers.get('chapa-signature'),
+      req.headers.get('x-chapa-signature'),
+    );
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Webhook verification is not configured.' }, { status: 503 });
   }

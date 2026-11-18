@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { getOwner, getUser } from '@/lib/auth';
 import { decryptBankingValue } from '@/lib/banking-crypto';
-import { assertChapaTestMode, chapaRequest } from '@/lib/chapa';
+import { assertChapaPayoutsEnabled, chapaRequest } from '@/lib/chapa';
 import { db } from '@/lib/db';
 import { createPayoutReservation } from '@/lib/finance-ledger';
 
@@ -22,11 +22,10 @@ export async function POST(req: Request) {
   if (!user || (!isOwner && (user.role !== 'PRODUCER' || !user.shop))) {
     return NextResponse.json({ error: 'Seller or owner access required.' }, { status: 403 });
   }
-  if (!process.env.CHAPA_SECRET_KEY) return NextResponse.json({ error: 'Chapa sandbox credentials are not configured.' }, { status: 503 });
   try {
-    assertChapaTestMode();
+    assertChapaPayoutsEnabled();
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Chapa test mode is unavailable.' }, { status: 503 });
+    return NextResponse.json({ error: error instanceof Error ? error.message : 'Chapa payouts are unavailable.' }, { status: 503 });
   }
 
   let payoutReference: string | null = null;

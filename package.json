@@ -2,7 +2,7 @@
   "name": "dheehstore",
   "version": "1.0.0",
   "private": true,
-  "scripts": {"dev":"next dev","build":"prisma generate && next build","start":"next start","db:push":"prisma db push","db:seed":"prisma db seed","owner:setup":"prisma db seed","test":"tsx --test tests/*.test.ts","postinstall":"prisma generate"},
+  "scripts": {"dev":"next dev","build":"prisma generate && next build","start":"next start","db:migrate:dev":"prisma migrate dev","db:migrate:deploy":"prisma migrate deploy","db:migrate:status":"prisma migrate status","db:import:sqlite":"tsx scripts/migrate-sqlite-to-postgres.ts","db:seed":"prisma db seed","owner:setup":"prisma db seed","test":"tsx --test tests/*.test.ts","postinstall":"prisma generate"},
   "prisma": {"seed":"tsx prisma/seed.ts"},
   "dependencies": {"@prisma/client":"^6.19.0","bcryptjs":"^3.0.2","next":"^15.5.6","react":"^19.1.1","react-dom":"^19.1.1","zod":"^4.1.12"},
   "devDependencies": {"prisma":"^6.19.0","tsx":"^4.20.6","typescript":"^5.9.3","@types/node":"^22.19.1","@types/react":"^19.2.7","@types/react-dom":"^19.2.3"}

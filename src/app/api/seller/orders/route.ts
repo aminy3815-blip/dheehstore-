@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { db } from '@/lib/db';
 import { getUser } from '@/lib/auth';
 import { recordPaidOrder, releaseOrderSettlement } from '@/lib/finance-ledger';
+import { recordEligibleOrderCommission } from '@/lib/weekly-commission';
 
 export async function PATCH(req: Request) {
   const user = await getUser();
@@ -22,6 +23,7 @@ export async function PATCH(req: Request) {
         for (const item of order.items) await tx.product.update({ where: { id: item.productId }, data: { stock: { increment: item.quantity } } });
       }
       if (paid && order.paymentStatus !== 'PAID') await recordPaidOrder(tx, order.id, null);
+      if (status === 'DELIVERED' && paid) await recordEligibleOrderCommission(tx, order.id);
       if (status === 'DELIVERED' && paid) await releaseOrderSettlement(tx, order.id);
     });
     return NextResponse.json({ ok: true });

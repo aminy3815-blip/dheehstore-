@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { db } from '@/lib/db';
 import { getUser } from '@/lib/auth';
 import { groupCheckoutItemsByShop } from '@/lib/marketplace';
+import { assertChapaPaymentsEnabled } from '@/lib/chapa';
 
 const schema = z.object({
   items: z.array(z.object({ productId: z.string(), quantity: z.number().int().min(1).max(50) })).min(1),
@@ -15,8 +16,12 @@ export async function POST(req: Request) {
   if (!user) return NextResponse.json({ error: 'Sign in to place an order.' }, { status: 401 });
   try {
     const data = schema.parse(await req.json());
-    if (data.paymentMethod === 'CHAPA' && !process.env.CHAPA_SECRET_KEY) {
-      return NextResponse.json({ error: 'Chapa test mode is not configured. Add a Chapa test secret key before selecting Chapa.' }, { status: 503 });
+    if (data.paymentMethod === 'CHAPA') {
+      try {
+        assertChapaPaymentsEnabled();
+      } catch (error) {
+        return NextResponse.json({ error: error instanceof Error ? error.message : 'Chapa payments are unavailable.' }, { status: 503 });
+      }
     }
     const orders = await db.$transaction(async (tx) => {
       const ids = data.items.map((item) => item.productId);

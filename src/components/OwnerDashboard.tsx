@@ -1,13 +1,13 @@
 import { money, moneySantim } from '@/lib/format';
-import { CategoryCommissionForm, CommissionForm, MarketplaceSettingsForm, NetProfitCommissionForm, OwnerAction, OwnerChoice, OwnerPaymentVerify, PasswordChangeForm } from './OwnerControls';
+import { MarketplaceSettingsForm, OwnerAction, OwnerChoice, OwnerPaymentVerify, PasswordChangeForm } from './OwnerControls';
 import { BankingPanel } from './BankingPanel';
 import { OwnerDestinationReview } from './OwnerFinanceControls';
+import { CommissionPaymentReview, CommissionRefundForm, OwnerCommissionDestinationForm } from './WeeklyCommissionControls';
 
 const sections = [
-  ['overview', 'Overview'], ['sellers', 'Sellers'], ['customers', 'Customers'], ['products', 'Products'], ['orders', 'Orders'], ['payments', 'Payments'], ['finances', 'DHEEHSTORE Financial Center'], ['commissions', 'Commission settings'], ['complaints', 'Complaints'], ['notifications', 'Notifications'], ['activity', 'Activity log'], ['settings', 'Marketplace settings'],
+  ['overview', 'Overview'], ['sellers', 'Sellers'], ['customers', 'Customers'], ['products', 'Products'], ['orders', 'Orders'], ['payments', 'Payments'], ['finances', 'DHEEHSTORE Financial Center'], ['commission-collection', 'Commission collection'], ['commissions', 'Commission settings'], ['complaints', 'Complaints'], ['notifications', 'Notifications'], ['activity', 'Activity log'], ['settings', 'Marketplace settings'],
 ];
-const date = (value: Date | string) => new Date(value).toLocaleString('en-ET', { dateStyle: 'medium', timeStyle: 'short' });
-const commissionPercent = (bps: number) => (bps / 100).toLocaleString('en', { maximumFractionDigits: 2 });
+const date = (value: Date | string) => new Date(value).toLocaleString('en-ET', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Africa/Addis_Ababa' });
 
 function Table({ headers, children }: { headers: string[]; children: React.ReactNode }) { return <div className="ownerTableWrap"><table className="ownerTable"><thead><tr>{headers.map((header) => <th key={header}>{header}</th>)}</tr></thead><tbody>{children}</tbody></table></div>; }
 function Empty({ text }: { text: string }) { return <div className="ownerEmpty">{text}</div>; }
@@ -33,7 +33,7 @@ export function OwnerDashboard({ owner, view, data }: { owner: any; view: string
         <div className="ownerPanelTitle"><div><div className="eyebrow">DHEEHSTORE FINANCIAL CENTER</div><h2>Ledger-based financial overview</h2></div><span>ETB; values stored as santim</span></div>
         <div className="financeCards">
           <Stat label="MARKETPLACE SALES" value={moneySantim(data.finance.totalSalesSantim)}/>
-          <Stat label="ELIGIBLE SELLER PROFIT" value={moneySantim(data.finance.eligibleProfitSantim)}/>
+          <Stat label="COMMISSIONABLE PRODUCT SALES" value={moneySantim(data.finance.commissionableSalesSantim)}/>
           <Stat label="LIFETIME COMMISSION" value={moneySantim(data.finance.lifetimeCommissionSantim)}/>
           <Stat label="TODAY'S COMMISSION" value={moneySantim(data.finance.todayCommissionSantim)}/>
           <Stat label="LAST 7 DAYS" value={moneySantim(data.finance.sevenDayCommissionSantim)}/>
@@ -41,6 +41,9 @@ export function OwnerDashboard({ owner, view, data }: { owner: any; view: string
           <Stat label="THIS MONTH" value={moneySantim(data.finance.monthlyCommissionSantim)}/>
           <Stat label="THIS YEAR" value={moneySantim(data.finance.annualCommissionSantim)}/>
           <Stat label="PENDING COMMISSION" value={moneySantim(data.finance.pendingCommissionSantim)}/>
+          <Stat label="COMMISSION COLLECTED" value={moneySantim(data.finance.commissionCollectedSantim)}/>
+          <Stat label="WEEKLY COMMISSION OUTSTANDING" value={moneySantim(data.finance.commissionOutstandingSantim)}/>
+          <Stat label="OVERDUE COMMISSION" value={moneySantim(data.finance.overdueCommissionSantim)}/>
           <Stat label="AVAILABLE TO WITHDRAW" value={moneySantim(data.finance.availableWithdrawalSantim)}/>
           <Stat label="PENDING WITHDRAWAL" value={moneySantim(data.finance.pendingWithdrawalSantim)}/>
           <Stat label="TOTAL WITHDRAWN" value={moneySantim(data.finance.withdrawnSantim)}/>
@@ -48,7 +51,7 @@ export function OwnerDashboard({ owner, view, data }: { owner: any; view: string
           <Stat label="REFUNDS" value={moneySantim(data.finance.refundsSantim)}/>
           <Stat label="CHARGEBACKS" value={moneySantim(data.finance.chargebacksSantim)}/>
         </div>
-        <div className="financeRate"><div><b>3% net-profit commission model</b><small>Commission uses paid sale amount minus private seller product cost. No commission is charged on zero or negative eligible profit.</small></div><NetProfitCommissionForm initialPercent={data.finance.commissionBps / 100}/></div>
+        <div className="financeRate"><div><b>3% weekly product-price commission</b><small>Calculated on discounted product selling price after both payment and delivery are confirmed. Delivery charges are excluded. Refund credits reduce outstanding balances.</small></div><a className="ownerSmall" href="/owner?view=commission-collection">Open Commission Collection</a></div>
       </section>
       <section className="ownerPanel">
         <div className="ownerPanelTitle"><div><div className="eyebrow">FINANCIAL REPORTING</div><h2>Filter and export ledger activity</h2></div><a className="ownerSmall" href={`/api/owner/finance/export?range=${data.finance.range}${data.finance.from ? `&from=${data.finance.from}` : ''}${data.finance.to ? `&to=${data.finance.to}` : ''}`}>Export CSV ↓</a></div>
@@ -59,7 +62,7 @@ export function OwnerDashboard({ owner, view, data }: { owner: any; view: string
           <label>To<input type="date" name="to" defaultValue={data.finance.to}/></label>
           <button className="goldBtn">Apply filters</button>
         </form>
-        <div className="financeHero"><div><small>FILTERED MARKETPLACE SALES</small><strong>{moneySantim(data.finance.reportSalesSantim)}</strong></div><div><small>FILTERED ELIGIBLE PROFIT</small><strong>{moneySantim(data.finance.reportProfitSantim)}</strong></div><div><small>FILTERED COMMISSION</small><strong>{moneySantim(data.finance.reportCommissionSantim)}</strong></div></div>
+        <div className="financeHero"><div><small>FILTERED MARKETPLACE SALES</small><strong>{moneySantim(data.finance.reportSalesSantim)}</strong></div><div><small>FILTERED COMMISSIONABLE PRODUCT SALES</small><strong>{moneySantim(data.finance.reportCommissionableSalesSantim)}</strong></div><div><small>FILTERED COMMISSION GENERATED</small><strong>{moneySantim(data.finance.reportCommissionSantim)}</strong></div></div>
         <MiniBars title="Daily commission · last 30 days" items={data.finance.daily}/>
         <MiniBars title="Weekly commission · last 12 weeks" items={data.finance.weekly}/>
         <MiniBars title="Monthly commission · last 12 months" items={data.finance.monthly}/>
@@ -69,12 +72,47 @@ export function OwnerDashboard({ owner, view, data }: { owner: any; view: string
           <Breakdown title="Commission by product" items={data.finance.byProduct}/>
           <Breakdown title="Commission by payment method" items={data.finance.byMethod}/>
         </div>
-        <p className="ownerNote">Reports include immutable ledger postings only; historical estimates and unpaid orders are excluded. Refunds/chargebacks are shown only when supported by a verified refund record.</p>
+        <p className="ownerNote">Commission charts include eligible weekly commission records and historical finance-ledger sales. Weekly collections and refund credits are separately visible in Commission Collection.</p>
       </section>
       <OwnerDestinationReview destinations={data.finance.destinations}/>
       <BankingPanel isOwner/>
     </div>}
-    {activeView === 'commissions' && <section className="ownerPanel"><div className="ownerPanelTitle"><div><div className="eyebrow">BUSINESS MODEL</div><h2>Commission configuration</h2></div><span>Rates are for reporting only</span></div><CommissionForm initialPercent={data.settings.globalCommissionBps / 100}/><h3 className="ownerSubheading">Category-specific rates</h3><Table headers={['Category', 'Current rate', 'Set rate']}>{data.categories.map((category: any) => <tr key={category.id}><td><b>{category.name}</b></td><td>{category.commission ? `${commissionPercent(category.commission.commissionBps)}%` : 'Uses global rate'}</td><td><CategoryCommissionForm categoryId={category.id} initialPercent={Number(commissionPercent(category.commission?.commissionBps ?? data.settings.globalCommissionBps))}/></td></tr>)}</Table><p className="ownerNote">Commission collection and seller payouts are inactive. These settings only inform financial estimates.</p></section>}
+    {activeView === 'commission-collection' && <div className="financeCenter">
+      <section className="ownerPanel">
+        <div className="ownerPanelTitle"><div><div className="eyebrow">COMMISSION COLLECTION</div><h2>Weekly seller commission statements</h2></div><div className="complaintActions"><a className="ownerSmall" href="/owner?view=commission-collection">All statements</a><a className="ownerSmall" href="/owner?view=commission-collection&status=OVERDUE">Overdue sellers</a><a className="ownerSmall" href="/api/owner/commission/export">Download weekly report CSV ↓</a></div></div>
+        <p className="ownerNote">ETB values are stored as integer santim. Sales are assessed at 3% of discounted product prices, excluding delivery, only after payment and delivery. A receipt is not payment confirmation; only owner-confirmed amounts reduce balances.</p>
+        {data.commissionCollection.statements.length ? <Table headers={['Seller/shop', 'Seller ID', 'Week', 'Weekly sales', 'Commission owed', 'Previous balance', 'Submitted (seller total)', 'Amount confirmed', 'Remaining balance', 'Deadline', 'Status']}>
+          {data.commissionCollection.statements.map((statement: any) => <tr key={statement.id}>
+            <td><b>{statement.shop.name}</b><small>{statement.shop.owner.name}</small></td>
+            <td>{statement.shop.id}</td>
+            <td>{date(statement.periodStart)}<small>through {date(new Date(new Date(statement.periodEnd).getTime() - 1000))}</small></td>
+            <td>{moneySantim(statement.salesSantim)}</td>
+            <td>{moneySantim(statement.commissionSantim)}</td>
+            <td>{moneySantim(statement.carriedSantim)}</td>
+            <td>{moneySantim(statement.submittedSantim)}</td>
+            <td>{moneySantim(statement.paidSantim)}</td>
+            <td>{moneySantim(statement.outstandingSantim)}</td>
+            <td>{date(statement.deadline)}</td>
+            <td><span className={`ownerBadge ${statement.status.toLowerCase()}`}>{statement.status.replaceAll('_', ' ')}</span></td>
+          </tr>)}
+        </Table> : <Empty text="No weekly statements have been generated yet."/>}
+      </section>
+      <section className="ownerPanel">
+        <div className="ownerPanelTitle"><div><div className="eyebrow">PAYMENT VERIFICATION</div><h2>Seller submissions</h2></div><span>{data.commissionCollection.submissions.length} recent submissions</span></div>
+        {data.commissionCollection.submissions.length ? <div className="weeklyStatementList">{data.commissionCollection.submissions.map((submission: any) => <CommissionPaymentReview key={submission.id} submission={submission}/>)}</div> : <Empty text="No commission payments are awaiting review."/>}
+      </section>
+      <section className="ownerPanel">
+        <div className="ownerPanelTitle"><div><div className="eyebrow">VERIFIED REFUNDS</div><h2>Record an already completed customer refund</h2></div></div>
+        {data.commissionCollection.sales.length ? <div className="weeklyStatementList">{data.commissionCollection.sales.map((sale: any) => <CommissionRefundForm key={sale.id} sale={sale}/>)}</div> : <Empty text="No eligible paid-and-delivered product sales to adjust."/>}
+      </section>
+      <section className="ownerPanel">
+        <div className="ownerPanelTitle"><div><div className="eyebrow">OWNER BANKING</div><h2>Commission payment destinations</h2></div></div>
+        <p className="ownerNote">These encrypted destinations are shown to authenticated sellers. Configure only accounts authorized to receive DHEEHSTORE payments.</p>
+        {data.commissionCollection.destinations.map((destination: any) => <OwnerCommissionDestinationForm key={destination.id} destination={destination}/>)}
+        <OwnerCommissionDestinationForm/>
+      </section>
+    </div>}
+    {activeView === 'commissions' && <section className="ownerPanel"><div className="ownerPanelTitle"><div><div className="eyebrow">BUSINESS MODEL</div><h2>Weekly commission policy</h2></div><span>Fixed rate</span></div><div className="financeCards"><Stat label="COMMISSION RATE" value="3%"/><Stat label="COMMISSION BASE" value="Discounted product selling price"/><Stat label="DELIVERY CHARGES" value="Excluded"/><Stat label="ELIGIBILITY" value="Paid and delivered"/></div><p className="ownerNote">Commission is collected weekly on Monday. The former configurable net-profit rate remains stored for historical compatibility but does not affect new sales or weekly statements.</p></section>}
     {activeView === 'complaints' && <section className="ownerPanel"><div className="ownerPanelTitle"><div><div className="eyebrow">CUSTOMER SUPPORT</div><h2>Complaints and disputes</h2></div><span>{data.complaints.filter((complaint: any) => complaint.status === 'OPEN' || complaint.status === 'INVESTIGATING').length} unresolved</span></div>{data.complaints.length ? <div className="complaintList">{data.complaints.map((complaint: any) => <article className="complaintCard" key={complaint.id}><div className="complaintMeta"><span className={`ownerBadge ${complaint.status.toLowerCase()}`}>{complaint.status}</span><span>{date(complaint.createdAt)}</span><span>{complaint.reporter?.name || 'Account removed'} · {complaint.reporter?.email || ''}</span></div><h3>{complaint.subject}</h3><p>{complaint.message}</p>{complaint.orderNumber && <small>Order: {complaint.orderNumber}</small>}<div className="complaintActions"><OwnerChoice action="complaint-status" id={complaint.id} current={complaint.status} options={['OPEN', 'INVESTIGATING', 'RESOLVED', 'DISMISSED']}/><OwnerAction payload={{ action: 'complaint-status', id: complaint.id, status: 'RESOLVED', resolution: 'Reviewed and resolved by marketplace owner.' }} label="Resolve"/></div></article>)}</div> : <Empty text="No complaints have been filed."/>}</section>}
     {activeView === 'notifications' && <section className="ownerPanel"><div className="ownerPanelTitle"><div><div className="eyebrow">OWNER ALERTS</div><h2>Notifications</h2></div><span>{data.unreadCount} unread</span></div>{data.notifications.length ? <div className="ownerNotificationList">{data.notifications.map((notification: any) => <article className={`ownerNotification ${notification.readAt ? '' : 'unread'}`} key={notification.id}><div><small>{date(notification.createdAt)}</small><h3>{notification.title}</h3><p>{notification.body}</p></div><div>{notification.href && <a className="ownerSmall" href={notification.href}>Open</a>}{!notification.readAt && <OwnerAction payload={{ action: 'notification-read', id: notification.id }} label="Mark read"/>}</div></article>)}</div> : <Empty text="No owner notifications yet. New producer applications and complaints appear here."/>}</section>}
     {activeView === 'activity' && <section className="ownerPanel"><div className="ownerPanelTitle"><div><div className="eyebrow">AUDIT TRAIL</div><h2>Administrative activity</h2></div><span>Latest 200 entries</span></div>{data.activity.length ? <Table headers={['When', 'Owner', 'Action', 'Record', 'Details']}>{data.activity.map((entry: any) => <tr key={entry.id}><td>{date(entry.createdAt)}</td><td>{entry.actor?.email || 'System'}</td><td><b>{entry.action}</b></td><td>{entry.entity}{entry.entityId && <small>{entry.entityId}</small>}</td><td>{entry.details || '—'}</td></tr>)}</Table> : <Empty text="Owner actions will be recorded here."/>}</section>}

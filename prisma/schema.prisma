@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
 }
 
 enum Role {
@@ -88,48 +89,83 @@ enum DestinationStatus {
   DISABLED
 }
 
+enum WeeklyCommissionStatus {
+  PENDING
+  AWAITING_VERIFICATION
+  PAID
+  OVERDUE
+  REJECTED
+}
+
+enum CommissionSubmissionStatus {
+  PENDING
+  AWAITING_VERIFICATION
+  CONFIRMED
+  REJECTED
+}
+
+enum CommissionPaymentMethod {
+  TELEBIRR
+  EBIRR
+  BANK_TRANSFER
+}
+
+enum CommissionReminderKind {
+  STATEMENT_GENERATED
+  DEADLINE_UPCOMING
+  DUE_TODAY
+  OVERDUE
+}
+
 model User {
-  id                 String         @id @default(cuid())
-  name               String
-  email              String         @unique
-  phone              String?
-  passwordHash       String
-  role               Role           @default(CUSTOMER)
-  accountStatus      AccountStatus  @default(ACTIVE)
-  suspensionReason   String?
-  createdAt          DateTime       @default(now())
-  shop               Shop?
-  addresses          Address[]
-  orders             Order[]
-  reviews            Review[]
-  notifications      Notification[]
-  reportedComplaints Complaint[]    @relation("ComplaintReporter")
-  activityEntries    ActivityLog[]
-  payoutDestinations PayoutDestination[]
-  payoutRequests     PayoutRequest[]
-  financialTransactions FinancialTransaction[]
-  financialWallet    FinancialWallet?
+  id                            String                        @id @default(cuid())
+  name                          String
+  email                         String                        @unique
+  phone                         String?
+  passwordHash                  String
+  role                          Role                          @default(CUSTOMER)
+  accountStatus                 AccountStatus                 @default(ACTIVE)
+  suspensionReason              String?
+  createdAt                     DateTime                      @default(now())
+  shop                          Shop?
+  addresses                     Address[]
+  orders                        Order[]
+  reviews                       Review[]
+  notifications                 Notification[]
+  reportedComplaints            Complaint[]                   @relation("ComplaintReporter")
+  activityEntries               ActivityLog[]
+  payoutDestinations            PayoutDestination[]
+  payoutRequests                PayoutRequest[]
+  financialTransactions         FinancialTransaction[]
+  financialWallet               FinancialWallet?
+  commissionSubmissions         CommissionPaymentSubmission[] @relation("CommissionSubmitter")
+  reviewedCommissionSubmissions CommissionPaymentSubmission[] @relation("CommissionReviewer")
+  commissionCredits             CommissionCredit[]            @relation("CommissionCreditActor")
 }
 
 model Shop {
-  id          String         @id @default(cuid())
-  ownerId     String         @unique
-  owner       User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  name        String
-  slug        String         @unique
-  description String
-  city        String
-  district    String?
-  logoUrl     String?
-  status      ProducerStatus @default(PENDING)
-  verified    Boolean        @default(false)
-  codEnabled  Boolean        @default(true)
-  deliveryFee Int            @default(0)
-  createdAt   DateTime       @default(now())
-  products    Product[]
-  orders      Order[]
-  reviews     Review[]
+  id                    String                        @id @default(cuid())
+  ownerId               String                        @unique
+  owner                 User                          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  name                  String
+  slug                  String                        @unique
+  description           String
+  city                  String
+  district              String?
+  logoUrl               String?
+  status                ProducerStatus                @default(PENDING)
+  verified              Boolean                       @default(false)
+  codEnabled            Boolean                       @default(true)
+  deliveryFee           Int                           @default(0)
+  createdAt             DateTime                      @default(now())
+  products              Product[]
+  orders                Order[]
+  reviews               Review[]
   financialTransactions FinancialTransaction[]
+  commissionStatements  WeeklyCommissionStatement[]
+  commissionSales       CommissionSale[]
+  commissionSubmissions CommissionPaymentSubmission[]
+  commissionCredits     CommissionCredit[]
 }
 
 model Category {
@@ -142,25 +178,26 @@ model Category {
 }
 
 model Product {
-  id             String           @id @default(cuid())
-  shopId         String
-  shop           Shop             @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  categoryId     String
-  category       Category         @relation(fields: [categoryId], references: [id])
-  name           String
-  slug           String
-  description    String
-  imageUrl       String
-  price          Int
-  compareAtPrice Int?
-  stock          Int              @default(0)
-  condition      ProductCondition @default(NEW)
-  available      Boolean          @default(true)
-  featured       Boolean          @default(false)
-  createdAt      DateTime         @default(now())
-  unitCostSantim Int?
-  orderItems     OrderItem[]
-  reviews        Review[]
+  id              String           @id @default(cuid())
+  shopId          String
+  shop            Shop             @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  categoryId      String
+  category        Category         @relation(fields: [categoryId], references: [id])
+  name            String
+  slug            String
+  description     String
+  imageUrl        String
+  price           Int
+  compareAtPrice  Int?
+  stock           Int              @default(0)
+  condition       ProductCondition @default(NEW)
+  available       Boolean          @default(true)
+  featured        Boolean          @default(false)
+  createdAt       DateTime         @default(now())
+  unitCostSantim  Int?
+  orderItems      OrderItem[]
+  reviews         Review[]
+  commissionSales CommissionSale[]
 
   @@unique([shopId, slug])
   @@index([categoryId, available])
@@ -183,42 +220,45 @@ model Address {
 }
 
 model Order {
-  id             String        @id @default(cuid())
-  orderNumber    String        @unique
-  userId         String
-  user           User          @relation(fields: [userId], references: [id])
-  shopId         String
-  shop           Shop          @relation(fields: [shopId], references: [id])
-  addressId      String
-  address        Address       @relation(fields: [addressId], references: [id])
-  subtotal       Int
-  deliveryFee    Int
-  total          Int
-  status         OrderStatus   @default(PENDING)
-  paymentMethod  PaymentMethod
-  paymentStatus  PaymentStatus @default(UNPAID)
-  transactionRef String?
-  chapaPaymentId String?
-  createdAt      DateTime      @default(now())
-  items          OrderItem[]
-  chapaPayment  ChapaPayment? @relation(fields: [chapaPaymentId], references: [id])
+  id                    String                 @id @default(cuid())
+  orderNumber           String                 @unique
+  userId                String
+  user                  User                   @relation(fields: [userId], references: [id])
+  shopId                String
+  shop                  Shop                   @relation(fields: [shopId], references: [id])
+  addressId             String
+  address               Address                @relation(fields: [addressId], references: [id])
+  subtotal              Int
+  deliveryFee           Int
+  total                 Int
+  status                OrderStatus            @default(PENDING)
+  paymentMethod         PaymentMethod
+  paymentStatus         PaymentStatus          @default(UNPAID)
+  transactionRef        String?
+  chapaPaymentId        String?
+  createdAt             DateTime               @default(now())
+  items                 OrderItem[]
+  chapaPayment          ChapaPayment?          @relation(fields: [chapaPaymentId], references: [id])
   financialTransactions FinancialTransaction[]
+  commissionSales       CommissionSale[]
+  commissionCredits     CommissionCredit[]
 
   @@index([paymentStatus, createdAt])
 }
 
 model OrderItem {
-  id        String  @id @default(cuid())
-  orderId   String
-  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  productId String
-  product   Product @relation(fields: [productId], references: [id])
-  name      String
-  unitPrice Int
-  quantity  Int
-  unitCostSantim Int?
-  discountSantim Int @default(0)
+  id                   String                @id @default(cuid())
+  orderId              String
+  order                Order                 @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId            String
+  product              Product               @relation(fields: [productId], references: [id])
+  name                 String
+  unitPrice            Int
+  quantity             Int
+  unitCostSantim       Int?
+  discountSantim       Int                   @default(0)
   financialTransaction FinancialTransaction?
+  commissionSale       CommissionSale?
 }
 
 model Review {
@@ -282,12 +322,12 @@ model ActivityLog {
 }
 
 model MarketplaceSettings {
-  id                  String   @id @default("marketplace")
-  platformName        String   @default("DHEEHSTORE")
-  globalCommissionBps Int      @default(0)
-  netProfitCommissionBps Int   @default(300)
-  supportEmail        String?
-  updatedAt           DateTime @updatedAt
+  id                     String   @id @default("marketplace")
+  platformName           String   @default("DHEEHSTORE")
+  globalCommissionBps    Int      @default(0)
+  netProfitCommissionBps Int      @default(300)
+  supportEmail           String?
+  updatedAt              DateTime @updatedAt
 }
 
 model CategoryCommission {
@@ -305,70 +345,70 @@ model Session {
 }
 
 model ChapaPayment {
-  id              String   @id @default(cuid())
-  txRef           String   @unique
-  chapaReference  String?  @unique
-  checkoutUrl     String?
-  amountSantim    Int
-  feeSantim       Int      @default(0)
-  status          String   @default("PENDING")
-  verifiedAt      DateTime?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  orders          Order[]
+  id                    String                 @id @default(cuid())
+  txRef                 String                 @unique
+  chapaReference        String?                @unique
+  checkoutUrl           String?
+  amountSantim          Int
+  feeSantim             Int                    @default(0)
+  status                String                 @default("PENDING")
+  verifiedAt            DateTime?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  orders                Order[]
   financialTransactions FinancialTransaction[]
 
   @@index([status, createdAt])
 }
 
 model PayoutDestination {
-  id                    String            @id @default(cuid())
-  userId                String
-  user                  User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  provider              String
-  destinationType       String
+  id                     String            @id @default(cuid())
+  userId                 String
+  user                   User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider               String
+  destinationType        String
   accountHolderEncrypted String
   accountNumberEncrypted String
-  accountLast4          String
-  bankCode              String?
-  chapaSubaccountId     String?
-  status                DestinationStatus @default(PENDING)
-  createdAt             DateTime          @default(now())
-  updatedAt             DateTime          @updatedAt
-  payoutRequests        PayoutRequest[]
+  accountLast4           String
+  bankCode               String?
+  chapaSubaccountId      String?
+  status                 DestinationStatus @default(PENDING)
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+  payoutRequests         PayoutRequest[]
 
   @@index([userId, status])
 }
 
 model FinancialTransaction {
-  id                  String         @id @default(cuid())
-  orderId             String?
-  order               Order?         @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  orderItemId         String?        @unique
-  orderItem           OrderItem?     @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
-  paymentId           String?
-  payment             ChapaPayment?  @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  customerId          String?
-  customer            User?          @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  sellerId            String?
-  seller              Shop?          @relation(fields: [sellerId], references: [id], onDelete: SetNull)
-  productId           String?
-  kind                String
-  reference           String         @unique
-  grossSaleSantim     Int            @default(0)
-  productCostSantim   Int            @default(0)
-  eligibleProfitSantim Int           @default(0)
-  commissionSantim    Int            @default(0)
-  sellerAmountSantim  Int            @default(0)
-  processingFeeSantim Int            @default(0)
-  refundSantim        Int            @default(0)
-  settlementStatus    FinancialStatus @default(PENDING)
-  reversesId          String?
-  reverses            FinancialTransaction? @relation("FinancialReversal", fields: [reversesId], references: [id], onDelete: Restrict)
-  reversedBy          FinancialTransaction[] @relation("FinancialReversal")
-  postings            LedgerPosting[]
-  payout              PayoutRequest?
-  createdAt           DateTime       @default(now())
+  id                   String                 @id @default(cuid())
+  orderId              String?
+  order                Order?                 @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  orderItemId          String?                @unique
+  orderItem            OrderItem?             @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
+  paymentId            String?
+  payment              ChapaPayment?          @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  customerId           String?
+  customer             User?                  @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  sellerId             String?
+  seller               Shop?                  @relation(fields: [sellerId], references: [id], onDelete: SetNull)
+  productId            String?
+  kind                 String
+  reference            String                 @unique
+  grossSaleSantim      Int                    @default(0)
+  productCostSantim    Int                    @default(0)
+  eligibleProfitSantim Int                    @default(0)
+  commissionSantim     Int                    @default(0)
+  sellerAmountSantim   Int                    @default(0)
+  processingFeeSantim  Int                    @default(0)
+  refundSantim         Int                    @default(0)
+  settlementStatus     FinancialStatus        @default(PENDING)
+  reversesId           String?
+  reverses             FinancialTransaction?  @relation("FinancialReversal", fields: [reversesId], references: [id], onDelete: Restrict)
+  reversedBy           FinancialTransaction[] @relation("FinancialReversal")
+  postings             LedgerPosting[]
+  payout               PayoutRequest?
+  createdAt            DateTime               @default(now())
 
   @@index([sellerId, settlementStatus, createdAt])
   @@index([kind, createdAt])
@@ -376,35 +416,35 @@ model FinancialTransaction {
 }
 
 model LedgerPosting {
-  id              String               @id @default(cuid())
-  transactionId   String
-  transaction     FinancialTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
-  account         String
-  debitSantim     Int                  @default(0)
-  creditSantim    Int                  @default(0)
-  createdAt       DateTime             @default(now())
+  id            String               @id @default(cuid())
+  transactionId String
+  transaction   FinancialTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  account       String
+  debitSantim   Int                  @default(0)
+  creditSantim  Int                  @default(0)
+  createdAt     DateTime             @default(now())
 
   @@index([account, createdAt])
   @@index([transactionId])
 }
 
 model PayoutRequest {
-  id              String               @id @default(cuid())
-  userId          String
-  user            User                 @relation(fields: [userId], references: [id], onDelete: Restrict)
-  destinationId   String
-  destination     PayoutDestination    @relation(fields: [destinationId], references: [id], onDelete: Restrict)
-  amountSantim    Int
-  reference       String               @unique
-  idempotencyKey  String               @unique
+  id                String                @id @default(cuid())
+  userId            String
+  user              User                  @relation(fields: [userId], references: [id], onDelete: Restrict)
+  destinationId     String
+  destination       PayoutDestination     @relation(fields: [destinationId], references: [id], onDelete: Restrict)
+  amountSantim      Int
+  reference         String                @unique
+  idempotencyKey    String                @unique
   providerReference String?
-  status          PayoutStatus         @default(PENDING)
-  failureReason   String?
-  transactionId   String?              @unique
-  transaction     FinancialTransaction? @relation(fields: [transactionId], references: [id], onDelete: Restrict)
-  createdAt       DateTime             @default(now())
-  updatedAt       DateTime             @updatedAt
-  completedAt     DateTime?
+  status            PayoutStatus          @default(PENDING)
+  failureReason     String?
+  transactionId     String?               @unique
+  transaction       FinancialTransaction? @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  completedAt       DateTime?
 
   @@index([userId, status, createdAt])
 }
@@ -416,4 +456,144 @@ model FinancialWallet {
   pendingSantim   Int      @default(0)
   availableSantim Int      @default(0)
   updatedAt       DateTime @updatedAt
+}
+
+model CommissionSale {
+  id               String             @id @default(cuid())
+  orderId          String
+  order            Order              @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  orderItemId      String             @unique
+  orderItem        OrderItem          @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
+  shopId           String
+  shop             Shop               @relation(fields: [shopId], references: [id], onDelete: Restrict)
+  productId        String
+  product          Product            @relation(fields: [productId], references: [id], onDelete: Restrict)
+  periodStart      DateTime
+  eligibleAt       DateTime
+  saleSantim       Int
+  commissionSantim Int
+  refundedSantim   Int                @default(0)
+  createdAt        DateTime           @default(now())
+  credits          CommissionCredit[]
+
+  @@index([shopId, periodStart])
+  @@index([eligibleAt])
+}
+
+model WeeklyCommissionStatement {
+  id                 String                        @id @default(cuid())
+  shopId             String
+  shop               Shop                          @relation(fields: [shopId], references: [id], onDelete: Restrict)
+  periodStart        DateTime
+  periodEnd          DateTime
+  deadline           DateTime
+  salesSantim        Int
+  commissionSantim   Int
+  carriedSantim      Int                           @default(0)
+  totalDueSantim     Int
+  status             WeeklyCommissionStatus        @default(PENDING)
+  createdAt          DateTime                      @default(now())
+  paymentAllocations CommissionPaymentAllocation[]
+  creditAllocations  CommissionCreditAllocation[]
+  reminders          CommissionReminder[]
+
+  @@unique([shopId, periodStart])
+  @@index([shopId, deadline, status])
+}
+
+model CommissionPaymentSubmission {
+  id                  String                        @id @default(cuid())
+  shopId              String
+  shop                Shop                          @relation(fields: [shopId], references: [id], onDelete: Restrict)
+  submitterId         String
+  submitter           User                          @relation("CommissionSubmitter", fields: [submitterId], references: [id], onDelete: Restrict)
+  reviewerId          String?
+  reviewer            User?                         @relation("CommissionReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+  destinationId       String
+  destination         OwnerCommissionDestination    @relation(fields: [destinationId], references: [id], onDelete: Restrict)
+  destinationProvider String
+  destinationLast4    String
+  method              CommissionPaymentMethod
+  amountSantim        Int
+  confirmedSantim     Int                           @default(0)
+  reference           String                        @unique
+  idempotencyKey      String
+  receipt             Bytes?
+  receiptMimeType     String?
+  receiptFileName     String?
+  status              CommissionSubmissionStatus    @default(PENDING)
+  rejectionReason     String?
+  createdAt           DateTime                      @default(now())
+  reviewedAt          DateTime?
+  allocations         CommissionPaymentAllocation[]
+
+  @@unique([shopId, idempotencyKey])
+  @@index([shopId, status, createdAt])
+}
+
+model CommissionPaymentAllocation {
+  id           String                      @id @default(cuid())
+  statementId  String
+  statement    WeeklyCommissionStatement   @relation(fields: [statementId], references: [id], onDelete: Restrict)
+  submissionId String
+  submission   CommissionPaymentSubmission @relation(fields: [submissionId], references: [id], onDelete: Restrict)
+  amountSantim Int
+  createdAt    DateTime                    @default(now())
+
+  @@unique([statementId, submissionId])
+}
+
+model CommissionCredit {
+  id                     String                       @id @default(cuid())
+  shopId                 String
+  shop                   Shop                         @relation(fields: [shopId], references: [id], onDelete: Restrict)
+  orderId                String
+  order                  Order                        @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  saleId                 String
+  sale                   CommissionSale               @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  reference              String                       @unique
+  refundSantim           Int
+  commissionCreditSantim Int
+  actorId                String
+  actor                  User                         @relation("CommissionCreditActor", fields: [actorId], references: [id], onDelete: Restrict)
+  createdAt              DateTime                     @default(now())
+  allocations            CommissionCreditAllocation[]
+
+  @@index([shopId, createdAt])
+}
+
+model CommissionCreditAllocation {
+  id           String                    @id @default(cuid())
+  statementId  String
+  statement    WeeklyCommissionStatement @relation(fields: [statementId], references: [id], onDelete: Restrict)
+  creditId     String
+  credit       CommissionCredit          @relation(fields: [creditId], references: [id], onDelete: Restrict)
+  amountSantim Int
+  createdAt    DateTime                  @default(now())
+
+  @@unique([statementId, creditId])
+}
+
+model CommissionReminder {
+  id          String                    @id @default(cuid())
+  statementId String
+  statement   WeeklyCommissionStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+  kind        CommissionReminderKind
+  createdAt   DateTime                  @default(now())
+
+  @@unique([statementId, kind])
+}
+
+model OwnerCommissionDestination {
+  id                     String                        @id @default(cuid())
+  provider               String
+  accountHolderEncrypted String
+  accountNumberEncrypted String
+  accountLast4           String
+  isDefault              Boolean                       @default(false)
+  createdAt              DateTime                      @default(now())
+  updatedAt              DateTime                      @updatedAt
+  commissionSubmissions  CommissionPaymentSubmission[]
+
+  @@index([isDefault])
 }

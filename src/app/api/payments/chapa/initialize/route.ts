@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { getUser } from '@/lib/auth';
-import { assertChapaTestMode, chapaRequest } from '@/lib/chapa';
+import { assertChapaPaymentsEnabled, chapaRequest } from '@/lib/chapa';
 import { db } from '@/lib/db';
 
 const schema = z.object({ orderIds: z.array(z.string().min(1)).min(1).max(25) });
@@ -20,7 +20,11 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'APP_BASE_URL must use HTTPS in production.' }, { status: 503 });
   }
   try {
-    assertChapaTestMode();
+    assertChapaPaymentsEnabled();
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : 'Chapa payments are unavailable.' }, { status: 503 });
+  }
+  try {
     const { orderIds } = schema.parse(await req.json());
     if (new Set(orderIds).size !== orderIds.length) return NextResponse.json({ error: 'Duplicate orders were submitted.' }, { status: 400 });
     const orders = await db.order.findMany({ where: { id: { in: orderIds }, userId: user.id }, include: { user: true } });

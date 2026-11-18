@@ -5,7 +5,8 @@ import { getFinanceRange } from '@/lib/finance-report';
 
 function csv(value: unknown) {
   const text = value === null || value === undefined ? '' : String(value);
-  return `"${text.replaceAll('"', '""')}"`;
+  const safe = typeof value === 'string' && /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+  return `"${safe.replaceAll('"', '""')}"`;
 }
 
 export async function GET(req: Request) {
@@ -16,7 +17,16 @@ export async function GET(req: Request) {
     const range = getFinanceRange(url.searchParams.get('range') || undefined, url.searchParams.get('from') || undefined, url.searchParams.get('to') || undefined);
     const records = await db.financialTransaction.findMany({
       where: {
-        kind: { in: ['SALE', 'DELIVERY'] },
+        kind: {
+          in: [
+            'SALE',
+            'DELIVERY',
+            'WEEKLY_COMMISSION_ASSESSMENT',
+            'WEEKLY_COMMISSION_COLLECTION',
+            'WEEKLY_COMMISSION_REFUND',
+            'WEEKLY_COMMISSION_CREDIT_APPLIED',
+          ],
+        },
         ...(range.from || range.to ? { createdAt: { ...(range.from ? { gte: range.from } : {}), ...(range.to ? { lt: range.to } : {}) } } : {}),
       },
       include: {
@@ -26,16 +36,22 @@ export async function GET(req: Request) {
       },
       orderBy: { createdAt: 'asc' },
     });
+    const productIds = [...new Set(records.map((record) => record.productId).filter((id): id is string => Boolean(id)))];
+    const products = productIds.length
+      ? await db.product.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true } })
+      : [];
+    const productNames = new Map(products.map((product) => [product.id, product.name]));
     const rows = [
-      ['transaction_id', 'date', 'order_id', 'customer_id', 'seller_id', 'shop', 'product', 'gross_sale_etb', 'product_cost_etb', 'eligible_profit_etb', 'commission_etb', 'seller_amount_etb', 'processing_fee_etb', 'refund_etb', 'settlement_status', 'payment_method', 'reference'],
+      ['transaction_id', 'date', 'transaction_kind', 'order_id', 'customer_id', 'seller_id', 'shop', 'product', 'gross_sale_etb', 'product_cost_etb', 'eligible_profit_etb', 'commission_etb', 'seller_amount_etb', 'processing_fee_etb', 'refund_etb', 'settlement_status', 'payment_method', 'reference'],
       ...records.map((record) => [
         record.id,
         record.createdAt.toISOString(),
+        record.kind,
         record.orderId,
         record.order?.user.id,
         record.sellerId,
         record.seller?.name,
-        record.orderItem?.name || (record.kind === 'DELIVERY' ? 'Delivery fee' : ''),
+        record.orderItem?.name || (record.kind === 'DELIVERY' ? 'Delivery fee' : productNames.get(record.productId || '') || ''),
         record.grossSaleSantim / 100,
         record.productCostSantim / 100,
         record.eligibleProfitSantim / 100,
